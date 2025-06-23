@@ -478,7 +478,7 @@ namespace Remote_control
                 // If MEM active
                 else if (ButtonMainMem.BackColor == System.Drawing.Color.LightGreen)
                 {
-                    SendCommand($"LM1{btnIndex + 1};");
+                    SendCommand($"LM0{btnIndex + 1};");
                     ResetPBMemState();
                 }
                 else
