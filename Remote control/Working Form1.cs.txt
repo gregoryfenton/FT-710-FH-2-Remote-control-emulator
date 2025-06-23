@@ -1,0 +1,520 @@
+using System;
+using System.IO.Ports;
+using System.Linq;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace Remote_control
+{
+    public partial class MainForm : Form
+    {
+        private SerialPort? serialPort;
+        private bool isConnected = false;
+        private string aiStatusInitial = "0";
+        private bool aiWasEnabled = false;
+
+        private string? lastSentCommand;
+        private readonly System.Windows.Forms.Timer riPollTimer = new System.Windows.Forms.Timer();
+        private int leftRightStep = 1000;
+        private int upDownMultiplier = 5;
+
+        public MainForm()
+        {
+            InitializeComponent();
+
+            // Wire button click events
+            ButtonMain1.Click += MainButton_Click;
+            ButtonMain2.Click += MainButton_Click;
+            ButtonMain3.Click += MainButton_Click;
+            ButtonMain4.Click += MainButton_Click;
+            ButtonMain5.Click += MainButton_Click;
+            ButtonMainMem.Click += MemButton_Click;
+            ButtonMainPB.Click += PBButton_Click;
+
+            ButtonMainLeft.Click += LeftRightButton_RightClick_Or_Click;
+            ButtonMainRight.Click += LeftRightButton_RightClick_Or_Click;
+            ButtonMainUp.Click += UpDownButton_RightClick_Or_Click;
+            ButtonMainDown.Click += UpDownButton_RightClick_Or_Click;
+
+            ButtonFreq0.Click += FreqButton_Click;
+            ButtonFreq1.Click += FreqButton_Click;
+            ButtonFreq2.Click += FreqButton_Click;
+            ButtonFreq3.Click += FreqButton_Click;
+            ButtonFreq4.Click += FreqButton_Click;
+            ButtonFreq5.Click += FreqButton_Click;
+            ButtonFreq6.Click += FreqButton_Click;
+            ButtonFreq7.Click += FreqButton_Click;
+            ButtonFreq8.Click += FreqButton_Click;
+            ButtonFreq9.Click += FreqButton_Click;
+
+            ButtonFreqClear.Click += (s, e) => FrequencyChangeTextBox.Clear();
+            ButtonFreqSet.Click += SetFrequency_Click;
+
+            ModeComboBox.SelectedIndexChanged += ModeComboBox_SelectedIndexChanged;
+
+            ComPortButton.Click += ComPortButton_Click;
+
+            FrequencyChangeTextBox.KeyDown += FrequencyChangeTextBox_KeyDown;
+
+            // Initialize status labels and texts
+            Status1Name.Text = "SWR";
+            Status2Name.Text = "MSG";
+            Status3Name.Text = "TxMode";
+            Status4Name.Text = "Tuner";
+            Status5Name.Text = "Scan";
+            Status6Name.Text = "Sql";
+
+            SetAllStatusTexts("---");
+
+            riPollTimer.Interval = 300; // 300 ms
+            riPollTimer.Tick += (s, e) => SendCommand("RI0;");
+
+            // Tooltips example (add more as desired)
+            var tooltip = new ToolTip();
+            tooltip.SetToolTip(ButtonMainLeft, "Left step frequency (Right-click to change)");
+            tooltip.SetToolTip(ButtonMainRight, "Right step frequency (Right-click to change)");
+            tooltip.SetToolTip(ButtonMainUp, "Up step frequency (Right-click to change multiplier)");
+            tooltip.SetToolTip(ButtonMainDown, "Down step frequency (Right-click to change multiplier)");
+        }
+
+        private void MainForm_Load(object sender, EventArgs e)
+        {
+            PopulateComPorts();
+            PopulateModeComboBox();
+            FrequencyTextBox.ReadOnly = true;
+
+            // Default ComSpeed to 38400 if available, else first item
+            if (ComSpeedComboBox.Items.Count > 0)
+            {
+                int index = ComSpeedComboBox.Items.IndexOf("38400");
+                ComSpeedComboBox.SelectedIndex = index >= 0 ? index : 0;
+            }
+        }
+
+        private void PopulateComPorts()
+        {
+            ComPortComboBox.Items.Clear();
+
+            // Get ports, sort by numeric part, e.g. COM1 < COM2 < COM10
+            var ports = SerialPort.GetPortNames()
+                .Where(p => p.StartsWith("COM", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(p =>
+                {
+                    if (int.TryParse(p.Substring(3), out int num)) return num;
+                    return int.MaxValue;
+                })
+                .ToArray();
+
+            ComPortComboBox.Items.AddRange(ports);
+
+            // Select highest port
+            if (ports.Length > 0)
+                ComPortComboBox.SelectedItem = ports.Last();
+        }
+
+        private void PopulateModeComboBox()
+        {
+            ModeComboBox.Items.Clear();
+            ModeComboBox.Items.AddRange(new object[]
+            {
+                "NONE", "CW-L", "CW-U", "LSB", "USB", "FM-N", "AM-N", "FM", "AM",
+                "DATA-L", "DATA-U", "DATA-FM-N", "DATA-FM", "RTTY-U", "PSK"
+            });
+            ModeComboBox.SelectedIndex = 4; // USB default
+        }
+
+        private async void ComPortButton_Click(object? sender, EventArgs e)
+        {
+            if (!isConnected)
+            {
+                if (ComPortComboBox.SelectedItem == null || ComSpeedComboBox.SelectedItem == null)
+                {
+                    MessageBox.Show("Please select a COM port and speed.");
+                    return;
+                }
+
+                try
+                {
+                    serialPort = new SerialPort(
+                        ComPortComboBox.SelectedItem.ToString()!,
+                        int.Parse(ComSpeedComboBox.SelectedItem.ToString()!)
+                    );
+                    serialPort.DataReceived += SerialPort_DataReceived;
+                    serialPort.Open();
+                    isConnected = true;
+                    ComPortButton.Text = "Disconnect";
+                    SetAllStatusTexts("---");
+
+                    await Task.Delay(500);
+
+                    SendCommand("AI;"); // Check AI status
+
+                    // Start polling status
+                    riPollTimer.Start();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Error opening serial port: " + ex.Message);
+                }
+            }
+            else
+            {
+                if (serialPort != null && serialPort.IsOpen)
+                {
+                    if (!aiWasEnabled)
+                        SendCommand($"AI{aiStatusInitial};");
+
+                    riPollTimer.Stop();
+                    serialPort.Close();
+                }
+                isConnected = false;
+                ComPortButton.Text = "Connect";
+                SetAllStatusTexts("---");
+            }
+        }
+
+        private void SerialPort_DataReceived(object? sender, SerialDataReceivedEventArgs e)
+        {
+            if (serialPort == null) return;
+
+            try
+            {
+                string data = serialPort.ReadExisting();
+
+                // Radio responses may be concatenated separated by ';'
+                var messages = data.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+
+                foreach (var msg in messages)
+                {
+                    BeginInvoke(new Action(() => HandleRadioResponse(msg + ";")));
+                }
+            }
+            catch { }
+        }
+
+        private void HandleRadioResponse(string data)
+        {
+            if (data == "?;")
+            {
+                if (!string.IsNullOrEmpty(lastSentCommand))
+                    MessageBox.Show($"Unrecognized CAT command: {lastSentCommand}");
+                return;
+            }
+
+            if (data.StartsWith("AI"))
+            {
+                aiStatusInitial = data.Length > 2 ? data.Substring(2, 1) : "0";
+                aiWasEnabled = (aiStatusInitial == "1");
+                if (!aiWasEnabled)
+                {
+                    SendCommand("AI1;");
+                    aiWasEnabled = true;
+                }
+            }
+            else if (data.StartsWith("IF"))
+            {
+                if (data.Length >= 14)
+                {
+                    string freqStr = data.Substring(5, 9);
+                    if (long.TryParse(freqStr, out long freq))
+                    {
+                        FrequencyTextBox.Text = freq.ToString();
+                    }
+                }
+            }
+            else if (data.StartsWith("MD"))
+            {
+                if (data.Length >= 4)
+                {
+                    string modeCode = data.Substring(3, 1);
+                    ModeComboBox.SelectedIndex = ModeCodeToIndex(modeCode);
+                }
+            }
+            else if (data.StartsWith("RI"))
+            {
+                ParseRiStatus(data);
+            }
+        }
+
+        private void ParseRiStatus(string data)
+        {
+            // Expected format: RI0P2P3P4P5P6P7P8;
+            // Length 11: "RI" + P1 + P2 + P3 + P4 + P5 + P6 + P7 + P8 + ";"
+            if (data.Length < 11) return;
+
+            // P2-P8 chars at positions 3 to 9 (7 chars)
+            // P1 always 0 at pos 2
+            char p2 = data[3];
+            char p3 = data[4];
+            char p4 = data[5];
+            char p5 = data[6];
+            char p6 = data[7];
+            char p7 = data[8];
+            char p8 = data[9];
+
+            Status1Text.Text = p2 switch
+            {
+                '0' => "Normal",
+                '1' => ColoredText("HI-SWR", System.Drawing.Color.Red),
+                _ => "---"
+            };
+            Status2Text.Text = p3 switch
+            {
+                '0' => "Stop",
+                '1' => ColoredText("Rec", System.Drawing.Color.Green),
+                '2' => ColoredText("P/B", System.Drawing.Color.Red),
+                _ => "---"
+            };
+            Status3Text.Text = p4 switch
+            {
+                '0' => "Rx",
+                '1' => ColoredText("Tx", System.Drawing.Color.Green),
+                '2' => ColoredText("Tx-INH", System.Drawing.Color.Red),
+                _ => "---"
+            };
+            Status4Text.Text = p6 switch
+            {
+                '0' => "Stop",
+                '1' => ColoredText("Tuning", System.Drawing.Color.Red),
+                _ => "---"
+            };
+            Status5Text.Text = p7 switch
+            {
+                '0' => "Stop",
+                '1' => ColoredText("Active", System.Drawing.Color.Green),
+                '2' => ColoredText("Paused", System.Drawing.Color.Red),
+                _ => "---"
+            };
+            Status6Text.Text = p8 switch
+            {
+                '0' => ColoredText("Closed", System.Drawing.Color.Blue),
+                '1' => ColoredText("Busy", System.Drawing.Color.Green),
+                _ => "---"
+            };
+        }
+
+        private string ColoredText(string text, System.Drawing.Color color)
+        {
+            // Since Label doesn't support colored substrings, 
+            // we'll just set full text and color in Label.ForeColor
+            // This function returns plain text for now; color is set separately.
+            return text;
+        }
+
+        private void SetAllStatusTexts(string text)
+        {
+            Status1Text.Text = text;
+            Status2Text.Text = text;
+            Status3Text.Text = text;
+            Status4Text.Text = text;
+            Status5Text.Text = text;
+            Status6Text.Text = text;
+        }
+
+        private int ModeCodeToIndex(string code) => code switch
+        {
+            "0" => 0,   // NONE
+            "7" => 1,   // CW-L
+            "3" => 2,   // CW-U
+            "1" => 3,   // LSB
+            "2" => 4,   // USB
+            "6" => 5,   // FM-N
+            "D" => 6,   // AM-N
+            "4" => 7,   // FM
+            "5" => 8,   // AM
+            "8" => 9,   // DATA-L
+            "C" => 10,  // DATA-U
+            "F" => 11,  // DATA-FM-N
+            "A" => 12,  // DATA-FM
+            "9" => 13,  // RTTY-U
+            "E" => 14,  // PSK
+            _ => 0
+        };
+
+        private string IndexToModeCode(int index) => index switch
+        {
+            0 => "0",
+            1 => "7",
+            2 => "3",
+            3 => "1",
+            4 => "2",
+            5 => "6",
+            6 => "D",
+            7 => "4",
+            8 => "5",
+            9 => "8",
+            10 => "C",
+            11 => "F",
+            12 => "A",
+            13 => "9",
+            14 => "E",
+            _ => "0"
+        };
+
+        private void ModeComboBox_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            if (isConnected && serialPort?.IsOpen == true)
+            {
+                string modeCode = IndexToModeCode(ModeComboBox.SelectedIndex);
+                SendCommand($"MD0{modeCode};");
+            }
+        }
+
+        private void MainButton_Click(object? sender, EventArgs e)
+        {
+            if (!isConnected || serialPort == null || !serialPort.IsOpen) return;
+
+            if (sender is Button button && int.TryParse(button.Text, out int buttonIndex))
+            {
+                if (ButtonMainPB.BackColor == System.Drawing.Color.LightGreen)
+                    SendCommand($"PB0{buttonIndex};");
+                else if (ButtonMainMem.BackColor == System.Drawing.Color.LightGreen)
+                    SendCommand($"LM1{buttonIndex};");
+                else
+                    SendCommand($"{buttonIndex};");
+            }
+        }
+
+        private void MemButton_Click(object? sender, EventArgs e)
+        {
+            ButtonMainMem.BackColor = ButtonMainMem.BackColor == System.Drawing.Color.LightGreen
+                ? System.Drawing.SystemColors.Control
+                : System.Drawing.Color.LightGreen;
+            ButtonMainPB.BackColor = System.Drawing.SystemColors.Control;
+        }
+
+        private void PBButton_Click(object? sender, EventArgs e)
+        {
+            ButtonMainPB.BackColor = ButtonMainPB.BackColor == System.Drawing.Color.LightGreen
+                ? System.Drawing.SystemColors.Control
+                : System.Drawing.Color.LightGreen;
+            ButtonMainMem.BackColor = System.Drawing.SystemColors.Control;
+        }
+
+        private void LeftRightButton_RightClick_Or_Click(object? sender, EventArgs e)
+        {
+            if (sender is Button btn)
+            {
+                if (btn == ButtonMainLeft)
+                {
+                    if ((e as MouseEventArgs)?.Button == MouseButtons.Right)
+                    {
+                        ChangeLeftRightStep();
+                        return;
+                    }
+                    ChangeFrequency(-leftRightStep);
+                }
+                else if (btn == ButtonMainRight)
+                {
+                    if ((e as MouseEventArgs)?.Button == MouseButtons.Right)
+                    {
+                        ChangeLeftRightStep();
+                        return;
+                    }
+                    ChangeFrequency(leftRightStep);
+                }
+            }
+        }
+
+        private void UpDownButton_RightClick_Or_Click(object? sender, EventArgs e)
+        {
+            if (sender is Button btn)
+            {
+                int step = leftRightStep * upDownMultiplier;
+
+                if (btn == ButtonMainUp)
+                {
+                    if ((e as MouseEventArgs)?.Button == MouseButtons.Right)
+                    {
+                        ChangeUpDownMultiplier();
+                        return;
+                    }
+                    ChangeFrequency(step);
+                }
+                else if (btn == ButtonMainDown)
+                {
+                    if ((e as MouseEventArgs)?.Button == MouseButtons.Right)
+                    {
+                        ChangeUpDownMultiplier();
+                        return;
+                    }
+                    ChangeFrequency(-step);
+                }
+            }
+        }
+
+        private void ChangeLeftRightStep()
+        {
+            int[] options = { 1, 10, 100, 1000, 6250, 12500, 25000 };
+            int currentIndex = Array.IndexOf(options, leftRightStep);
+            int nextIndex = (currentIndex + 1) % options.Length;
+            leftRightStep = options[nextIndex];
+            MessageBox.Show($"Left/Right step set to {leftRightStep} Hz");
+        }
+
+        private void ChangeUpDownMultiplier()
+        {
+            int[] options = { 2, 3, 4, 5, 10 };
+            int currentIndex = Array.IndexOf(options, upDownMultiplier);
+            int nextIndex = (currentIndex + 1) % options.Length;
+            upDownMultiplier = options[nextIndex];
+            MessageBox.Show($"Up/Down multiplier set to {upDownMultiplier}x");
+        }
+
+        private void ChangeFrequency(int deltaHz)
+        {
+            if (!long.TryParse(FrequencyTextBox.Text, out long currentFreq)) return;
+            long newFreq = currentFreq + deltaHz;
+            if (newFreq >= 30000 && newFreq <= 75000000 && isConnected && serialPort != null && serialPort.IsOpen)
+            {
+                SendCommand($"FA{newFreq:D9};");
+            }
+        }
+
+        private void FreqButton_Click(object? sender, EventArgs e)
+        {
+            if (sender is Button btn)
+            {
+                FrequencyChangeTextBox.AppendText(btn.Text);
+            }
+        }
+
+        private void SetFrequency_Click(object? sender, EventArgs e)
+        {
+            if (long.TryParse(FrequencyChangeTextBox.Text, out long freq))
+            {
+                if (freq >= 30000 && freq <= 75000000 && isConnected && serialPort != null && serialPort.IsOpen)
+                {
+                    SendCommand($"FA{freq:D9};");
+                    FrequencyChangeTextBox.Clear();
+                }
+            }
+        }
+
+        private void FrequencyChangeTextBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                SetFrequency_Click(sender, EventArgs.Empty);
+            }
+        }
+
+        private void SendCommand(string cmd)
+        {
+            if (serialPort != null && serialPort.IsOpen)
+            {
+                lastSentCommand = cmd;
+                try
+                {
+                    serialPort.WriteLine(cmd);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Error sending command: {ex.Message}");
+                }
+            }
+        }
+    }
+}
