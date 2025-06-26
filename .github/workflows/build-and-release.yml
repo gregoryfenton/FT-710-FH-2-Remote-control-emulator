@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     branches:
-      - main  # Change to your branch name if needed
+      - master  # Change to your branch name if needed
     paths-ignore:
       - '**.md'
 
