@@ -1,46 +1,26 @@
-name: Build and Release
+name: Build Release
 
 on:
   push:
     branches:
-      - master  # Change if your main branch is named differently
-    workflow_dispatch:   # <-- THIS enables manual trigger
+      - master
 
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v3
 
-      - name: Setup .NET 9 SDK
-        uses: actions/setup-dotnet@v4
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '9.0.x'
 
-      - name: Restore dependencies
-        run: dotnet restore "Remote control/Remote control.csproj"
+      - name: Publish self-contained executable
+        run: dotnet publish "Remote control/Remote control.csproj" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true --output ./publish
 
-      - name: Build project
-        run: dotnet build "Remote control/Remote control.csproj" --configuration Release --no-restore
-
-      - name: Find executable
-        id: find-exe
-        shell: pwsh
-        run: |
-          $exe = Get-ChildItem -Path "Remote control\bin\Release\net9.0-windows" -Filter "*.exe" | Select-Object -First 1
-          if (-not $exe) {
-            Write-Error "EXE not found!"
-            exit 1
-          }
-          echo "EXE_PATH=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Create GitHub Release and upload exe
-        uses: softprops/action-gh-release@v2
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
         with:
-          tag_name: v${{ github.run_number }}
-          name: Release ${{ github.run_number }}
-          files: ${{ env.EXE_PATH }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: RemoteControlBuild
+          path: ./publish
