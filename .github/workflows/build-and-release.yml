@@ -18,10 +18,10 @@ jobs:
         dotnet-version: '9.0.x'
 
     - name: Publish x64 executable
-      run: dotnet publish "Remote control/Remote control.csproj" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish/win-x64
+      run: dotnet publish "Remote control/Remote control.csproj" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish/win-x64
 
     - name: Publish x86 executable
-      run: dotnet publish "Remote control/Remote control.csproj" -c Release -r win-x86 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish/win-x86
+      run: dotnet publish "Remote control/Remote control.csproj" -c Release -r win-x86 --self-contained true -p:PublishSingleFile=true -o ./publish/win-x86
 
     - name: Zip executables
       run: |
