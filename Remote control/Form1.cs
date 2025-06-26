@@ -1,10 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Ports;
 using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using System.Collections.Generic;
 
 namespace Remote_control
 {
@@ -18,6 +19,7 @@ namespace Remote_control
         private string aiStatusInitial = "0";
         private bool aiWasEnabled = false;
         private bool isBKINEnabled = false;
+        private bool MessageBoxIsOpen = false;
 
         private string? lastSentCommand;
         private readonly System.Windows.Forms.Timer riPollTimer = new System.Windows.Forms.Timer();
@@ -34,6 +36,8 @@ namespace Remote_control
         public Form1()
         {
             InitializeComponent();
+            string version = Assembly.GetExecutingAssembly().GetName().Version.ToString()!;
+            this.Text += $" v{version}";
 
             // Wire button click events
             ButtonMain1.Click += MainButton_Click;
@@ -105,7 +109,7 @@ namespace Remote_control
             PopulateComPorts();
             PopulateModeComboBox();
             FrequencyTextBox.ReadOnly = true;
-            FrequencyTextBox.Text = "v" + Assembly.GetExecutingAssembly().GetName().Version.ToString();
+            FrequencyTextBox.Text = "v" + Assembly.GetExecutingAssembly().GetName().Version.ToString()!;
             freqPollTimer = new System.Windows.Forms.Timer();
             freqPollTimer.Interval = 1000; // 1 second
             freqPollTimer.Tick += FreqPollTimer_Tick;
@@ -182,6 +186,42 @@ namespace Remote_control
                 ComPortComboBox.SelectedItem = ports.Last();
         }
 
+        private void ShowStepSizeMenu(Control button)
+        {
+            var menu = new ContextMenuStrip();
+            var stepValues = new[] { 1, 10, 100, 1000, 6250, 10000 }; // Sorted ascending
+            foreach (var step in stepValues)
+            {
+                var item = new ToolStripMenuItem($"{step:N0} Hz");
+                item.Tag = step;
+                item.Click += (s, e) =>
+                {
+                    leftRightStep = (int)((ToolStripMenuItem)s!).Tag!;
+                    MessageBox.Show($"Step size set to {leftRightStep} Hz", "Step Size", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                };
+                menu.Items.Add(item);
+            }
+            menu.Show(button, button.PointToClient(Cursor.Position));
+        }
+
+        private void ShowMultiplierMenu(Control button)
+        {
+            var menu = new ContextMenuStrip();
+            var multValues = new[] { 1, 2, 3, 4, 5, 10 }; // Sorted ascending
+            foreach (var mult in multValues)
+            {
+                var item = new ToolStripMenuItem($"× {mult}");
+                item.Tag = mult;
+                item.Click += (s, e) =>
+                {
+                    upDownMultiplier = (int)((ToolStripMenuItem)s!).Tag!;
+                    MessageBox.Show($"Multiplier set to ×{upDownMultiplier}", "Multiplier", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                };
+                menu.Items.Add(item);
+            }
+            menu.Show(button, button.PointToClient(Cursor.Position));
+        }
+
         private void PopulateModeComboBox()
         {
             ModeComboBox.Items.Clear();
@@ -228,7 +268,7 @@ namespace Remote_control
                 {                    
                     isConnected = false;
                     ComPortButton.Text = "Connect";
-                    FrequencyTextBox.Text = string.Empty;
+                    FrequencyTextBox.Text = Assembly.GetExecutingAssembly().GetName().Version.ToString()!;
                     SetAllStatusTexts("---");
                     MessageBox.Show("Error opening serial port: " + ex.Message);
                 }
@@ -278,8 +318,12 @@ namespace Remote_control
         {
             if (data == "?;")
             {
-                if (!string.IsNullOrEmpty(lastSentCommand))
-                    MessageBox.Show($"Unrecognized CAT command: {lastSentCommand}");
+                if (!string.IsNullOrEmpty(lastSentCommand) && !MessageBoxIsOpen)
+                {
+                    MessageBoxIsOpen = true;
+                    MessageBox.Show("Unrecognised CAT Command: " + lastSentCommand);
+                    MessageBoxIsOpen = false;
+                }
                 return;
             }
 
@@ -561,7 +605,7 @@ namespace Remote_control
                 {
                     if ((e as MouseEventArgs)?.Button == MouseButtons.Right)
                     {
-                        ChangeLeftRightStep();
+                        ShowStepSizeMenu(btn);
                         return;
                     }
                     ChangeFrequency(leftRightStep);
@@ -580,9 +624,10 @@ namespace Remote_control
                 {
                     if ((e as MouseEventArgs)?.Button == MouseButtons.Right)
                     {
-                        ChangeUpDownMultiplier();
+                        ShowMultiplierMenu(btn);
                         return;
                     }
+
                     ChangeFrequency(step);
                     ResetPBMemState();
                 }
@@ -637,6 +682,14 @@ namespace Remote_control
 
         private void SetFrequency_Click(object? sender, EventArgs e)
         {
+            if(float.TryParse(FrequencyChangeTextBox.Text, out float f))
+            {
+                if (f <= 75)
+                {
+                    f = f * 1000000;
+                    FrequencyChangeTextBox.Text = ((long)f).ToString()!;
+                }
+            }
             if (long.TryParse(FrequencyChangeTextBox.Text, out long freq))
             {
                 if (freq >= 30000 && freq <= 75000000 && isConnected && serialPort != null && serialPort.IsOpen)
@@ -691,6 +744,7 @@ namespace Remote_control
                 }
             }
         }
+
 
         private void SendCommand(string command)
         {

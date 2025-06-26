@@ -218,9 +218,9 @@
             // FrequencyChangeTextBox
             // 
             FrequencyChangeTextBox.Cursor = Cursors.IBeam;
-            FrequencyChangeTextBox.Location = new Point(12, 212);
+            FrequencyChangeTextBox.Location = new Point(50, 212);
             FrequencyChangeTextBox.Name = "FrequencyChangeTextBox";
-            FrequencyChangeTextBox.Size = new Size(319, 27);
+            FrequencyChangeTextBox.Size = new Size(231, 27);
             FrequencyChangeTextBox.TabIndex = 17;
             // 
             // ButtonFreq1
@@ -393,7 +393,7 @@
             // 
             // Status6Text
             // 
-            Status6Text.Font = new Font("Segoe UI", 7.8F);
+            Status6Text.Font = new Font("Segoe UI", 6F);
             Status6Text.Location = new Point(281, 421);
             Status6Text.Name = "Status6Text";
             Status6Text.Size = new Size(50, 20);
@@ -403,7 +403,7 @@
             // 
             // Status5Text
             // 
-            Status5Text.Font = new Font("Segoe UI", 7.8F);
+            Status5Text.Font = new Font("Segoe UI", 6F);
             Status5Text.Location = new Point(225, 421);
             Status5Text.Name = "Status5Text";
             Status5Text.Size = new Size(50, 20);
@@ -413,7 +413,7 @@
             // 
             // Status4Text
             // 
-            Status4Text.Font = new Font("Segoe UI", 7.8F);
+            Status4Text.Font = new Font("Segoe UI", 6F);
             Status4Text.Location = new Point(174, 421);
             Status4Text.Name = "Status4Text";
             Status4Text.Size = new Size(50, 20);
@@ -423,7 +423,7 @@
             // 
             // Status3Text
             // 
-            Status3Text.Font = new Font("Segoe UI", 7.8F);
+            Status3Text.Font = new Font("Segoe UI", 6F);
             Status3Text.Location = new Point(118, 421);
             Status3Text.Name = "Status3Text";
             Status3Text.Size = new Size(50, 20);
@@ -433,7 +433,7 @@
             // 
             // Status2Text
             // 
-            Status2Text.Font = new Font("Segoe UI", 7.8F);
+            Status2Text.Font = new Font("Segoe UI", 6F);
             Status2Text.Location = new Point(62, 421);
             Status2Text.Name = "Status2Text";
             Status2Text.Size = new Size(50, 20);
@@ -443,7 +443,7 @@
             // 
             // Status1Text
             // 
-            Status1Text.Font = new Font("Segoe UI", 7.8F);
+            Status1Text.Font = new Font("Segoe UI", 6F);
             Status1Text.Location = new Point(6, 421);
             Status1Text.Name = "Status1Text";
             Status1Text.Size = new Size(50, 20);
