@@ -1,4 +1,4 @@
-name: Build and Zip Release
+name: Build and Release
 
 on:
   push:
@@ -6,30 +6,68 @@ on:
       - master
 
 jobs:
-  build:
+  build-and-release:
     runs-on: windows-latest
-
     steps:
-    - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Setup .NET SDK
-      uses: actions/setup-dotnet@v3
-      with:
-        dotnet-version: '9.0.x'
+      - name: Setup .NET 9 SDK
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '9.0.x'
 
-    - name: Publish x64 executable
-      run: dotnet publish "Remote control/Remote control.csproj" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish/win-x64
+      - name: Restore dependencies
+        run: dotnet restore "Remote control/Remote control.csproj"
 
-    - name: Publish x86 executable
-      run: dotnet publish "Remote control/Remote control.csproj" -c Release -r win-x86 --self-contained true -p:PublishSingleFile=true -o ./publish/win-x86
+      - name: Build and publish x64
+        run: |
+          dotnet publish "Remote control/Remote control.csproj" `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            /p:PublishSingleFile=true `
+            -o publish/x64
 
-    - name: Zip executables
-      run: |
-        cd publish
-        powershell Compress-Archive -Path win-x64/*,win-x86/* -DestinationPath RemoteControl_BothArchitectures.zip
+      - name: Build and publish x86
+        run: |
+          dotnet publish "Remote control/Remote control.csproj" `
+            -c Release `
+            -r win-x86 `
+            --self-contained true `
+            /p:PublishSingleFile=true `
+            -o publish/x86
 
-    - name: Upload zipped artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: RemoteControl_BothArchitectures
-        path: publish/RemoteControl_BothArchitectures.zip
+      - name: Zip executables
+        run: |
+          powershell Compress-Archive -Path publish/x64/* -DestinationPath publish/RemoteControl_x64.zip
+          powershell Compress-Archive -Path publish/x86/* -DestinationPath publish/RemoteControl_x86.zip
+
+      - name: Get version from x64 executable
+        id: get_version
+        run: |
+          $assemblyPath = "publish/x64/Remote control.exe"
+          $version = (Get-Item $assemblyPath).VersionInfo.ProductVersion
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+        shell: powershell
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.get_version.outputs.version }}
+          name: Release v${{ steps.get_version.outputs.version }}
+          body: "Automated release for version ${{ steps.get_version.outputs.version }}"
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.get_version.outputs.version }}
+          files: |
+            publish/RemoteControl_x64.zip
+            publish/RemoteControl_x86.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
