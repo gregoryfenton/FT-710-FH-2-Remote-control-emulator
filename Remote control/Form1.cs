@@ -105,6 +105,7 @@ namespace Remote_control
             PopulateComPorts();
             PopulateModeComboBox();
             FrequencyTextBox.ReadOnly = true;
+            FrequencyTextBox.Text = "v" + Assembly.GetExecutingAssembly().GetName().Version.ToString();
             freqPollTimer = new System.Windows.Forms.Timer();
             freqPollTimer.Interval = 1000; // 1 second
             freqPollTimer.Tick += FreqPollTimer_Tick;
