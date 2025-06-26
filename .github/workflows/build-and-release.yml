@@ -38,10 +38,12 @@ jobs:
             /p:PublishSingleFile=true `
             -o publish/x86
 
-      - name: Zip executables
+      - name: Combine x64 and x86 builds into one ZIP
         run: |
-          powershell Compress-Archive -Path publish/x64/* -DestinationPath publish/RemoteControl_x64.zip
-          powershell Compress-Archive -Path publish/x86/* -DestinationPath publish/RemoteControl_x86.zip
+          mkdir publish\combined
+          xcopy publish\x64\* publish\combined\x64\ /E /I /Y
+          xcopy publish\x86\* publish\combined\x86\ /E /I /Y
+          powershell Compress-Archive -Path publish\combined\* -DestinationPath publish\RemoteControl_Combined.zip
 
       - name: Get version from x64 executable
         id: get_version
