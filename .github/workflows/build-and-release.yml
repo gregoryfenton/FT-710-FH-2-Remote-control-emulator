@@ -1,4 +1,4 @@
-name: Build Release
+name: Build and Zip Release
 
 on:
   push:
@@ -8,19 +8,28 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v3
+    - uses: actions/checkout@v3
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: '9.0.x'
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '9.0.x'
 
-      - name: Publish self-contained executable
-        run: dotnet publish "Remote control/Remote control.csproj" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true --output ./publish
+    - name: Publish x64 executable
+      run: dotnet publish "Remote control/Remote control.csproj" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish/win-x64
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: RemoteControlBuild
-          path: ./publish
+    - name: Publish x86 executable
+      run: dotnet publish "Remote control/Remote control.csproj" -c Release -r win-x86 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish/win-x86
+
+    - name: Zip executables
+      run: |
+        cd publish
+        powershell Compress-Archive -Path win-x64/*,win-x86/* -DestinationPath RemoteControl_BothArchitectures.zip
+
+    - name: Upload zipped artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: RemoteControl_BothArchitectures
+        path: publish/RemoteControl_BothArchitectures.zip
