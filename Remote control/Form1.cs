@@ -13,13 +13,23 @@ namespace Remote_control
     {
         private System.Windows.Forms.Timer? freqPollTimer;
         private DateTime lastFrequencyUpdate = DateTime.MinValue;
-        
+
         private SerialPort? serialPort;
         private bool isConnected = false;
         private string aiStatusInitial = "0";
         private bool aiWasEnabled = false;
         private bool isBKINEnabled = false;
         private bool MessageBoxIsOpen = false;
+        private bool ignoreVolumeResponse = false;
+        private bool ignoreSquelchResponse = false;
+        private bool ignoreRFGainResponse = false;
+
+        private System.Windows.Forms.Timer volumeResponseTimer;
+        private System.Windows.Forms.Timer squelchResponseTimer;
+        private System.Windows.Forms.Timer rfGainResponseTimer;
+        private System.Windows.Forms.Timer? connectedTimer;
+
+        private DateTime? connectedStartTime;
 
         private string? lastSentCommand;
         private readonly System.Windows.Forms.Timer riPollTimer = new System.Windows.Forms.Timer();
@@ -28,15 +38,64 @@ namespace Remote_control
 
         private string iniFilePath = Path.Combine(Application.StartupPath, "settings.ini");
 
-        // Stores custom CAT commands for buttons 1-5
         private string[] mainButtonCatCommands = new string[5] { "1;", "2;", "3;", "4;", "5;" };
 
         private ToolTip tooltip = new ToolTip();
 
+        private System.Windows.Forms.Timer? pbMemTimeoutTimer = null;
+
+        private bool ChangingTextBoxColor = false;
+        private string lastFrequency = "";
+        private readonly string[] BandEdgeLabels = new string[]
+        {
+            "1.8–2.0 MHz",     // 160M
+            "3.5–3.8 MHz",     // 80M
+            "5.3515–5.3785 MHz - Mind the gaps!",     // 60M
+            "7.0–7.2 MHz",     // 40M
+            "10.1–10.15 MHz",  // 30M
+            "14.0–14.35 MHz",  // 20M
+            "18.068–18.168 MHz", // 17M
+            "21.0–21.45 MHz",  // 15M
+            "24.89–24.99 MHz", // 12M
+            "28.0–29.7 MHz",   // 10M
+            "50.0–54.0 MHz",   // 6M
+            "70.0+ MHz / Gen"  // 4M / Gen
+        };
+        private readonly long[] BandEdgeLow = new long[]
+        {
+            1800000,  // 160M
+            3500000,  // 80M
+            5351500,  // 60M
+            7000000,  // 40M
+            10100000, // 30M
+            14000000, // 20M
+            18068000, // 17M
+            21000000, // 15M
+            24890000, // 12M
+            28000000, // 10M
+            50000000, // 6M
+            70000000  // 4M / Gen
+        };
+        private readonly long[] BandEdgeHigh = new long[]
+        {
+            2000000,  // 160M
+            3800000,  // 80M
+            5378500,  // 60M
+            7200000,  // 40M
+            10150000, // 30M
+            14350000, // 20M
+            18168000, // 17M
+            21450000, // 15M
+            24990000, // 12M
+            29700000, // 10M
+            54000000, // 6M
+            100000000 // 4M / Gen (wide open)
+        };
+
         public Form1()
         {
             InitializeComponent();
-            string version = Assembly.GetExecutingAssembly().GetName().Version.ToString()!;
+            var version = Assembly.GetExecutingAssembly().GetName().Version!.ToString();
             this.Text += $" v{version}";
 
             // Wire button click events
@@ -55,10 +114,10 @@ namespace Remote_control
             ButtonMain4.MouseDown += MainButton_MouseDown;
             ButtonMain5.MouseDown += MainButton_MouseDown;
 
-            ButtonMainLeft.Click += LeftRightButton_RightClick_Or_Click;
-            ButtonMainRight.Click += LeftRightButton_RightClick_Or_Click;
-            ButtonMainUp.Click += UpDownButton_RightClick_Or_Click;
-            ButtonMainDown.Click += UpDownButton_RightClick_Or_Click;
+            ButtonMainLeft.MouseDown += LeftRightButton_RightClick_Or_Click;
+            ButtonMainRight.MouseDown += LeftRightButton_RightClick_Or_Click;
+            ButtonMainUp.MouseDown += UpDownButton_RightClick_Or_Click;
+            ButtonMainDown.MouseDown += UpDownButton_RightClick_Or_Click;
 
             ButtonFreq0.Click += FreqButton_Click;
             ButtonFreq1.Click += FreqButton_Click;
@@ -94,8 +153,17 @@ namespace Remote_control
             ButtonMainDec.Text = "Bkin";
 
             riPollTimer.Interval = 300; // 300 ms
-            riPollTimer.Tick += (s, e) => SendCommand("RI0;BI;");
+            riPollTimer.Tick += (s, e) => SendCommand("RI0;BI;AG0;SQ0;RG0;");
 
+            volumeResponseTimer = new System.Windows.Forms.Timer { Interval = 500 };
+            volumeResponseTimer.Tick += (s, e) => { ignoreVolumeResponse = false; volumeResponseTimer.Stop(); };
+
+            squelchResponseTimer = new System.Windows.Forms.Timer { Interval = 500 };
+            squelchResponseTimer.Tick += (s, e) => { ignoreSquelchResponse = false; squelchResponseTimer.Stop(); };
+
+            rfGainResponseTimer = new System.Windows.Forms.Timer { Interval = 500 };
+            rfGainResponseTimer.Tick += (s, e) => { ignoreRFGainResponse = false; rfGainResponseTimer.Stop(); };
+            
             // Set tooltips on static controls
             InitializeTooltips();
 
@@ -108,8 +176,10 @@ namespace Remote_control
         {
             PopulateComPorts();
             PopulateModeComboBox();
+            PopulateBandSelectComboBox();
+            ConfigureSliders();
             FrequencyTextBox.ReadOnly = true;
-            FrequencyTextBox.Text = "v" + Assembly.GetExecutingAssembly().GetName().Version.ToString()!;
+            FrequencyTextBox.Text = $"v{Assembly.GetExecutingAssembly().GetName().Version!.ToString()}";
             freqPollTimer = new System.Windows.Forms.Timer();
             freqPollTimer.Interval = 1000; // 1 second
             freqPollTimer.Tick += FreqPollTimer_Tick;
@@ -157,82 +227,6 @@ namespace Remote_control
             }
         }
 
-        private void FreqPollTimer_Tick(object? sender, EventArgs e)
-        {
-            if (isConnected && (DateTime.Now - lastFrequencyUpdate).TotalMilliseconds > 1000)
-            {
-                SendCommand("IF;");
-            }
-        }
-
-        private void PopulateComPorts()
-        {
-            ComPortComboBox.Items.Clear();
-
-            // Get ports, sort by numeric part, e.g. COM1 < COM2 < COM10
-            var ports = SerialPort.GetPortNames()
-                .Where(p => p.StartsWith("COM", StringComparison.OrdinalIgnoreCase))
-                .OrderBy(p =>
-                {
-                    if (int.TryParse(p.Substring(3), out int num)) return num;
-                    return int.MaxValue;
-                })
-                .ToArray();
-
-            ComPortComboBox.Items.AddRange(ports);
-
-            // Select highest port if not already selected from settings
-            if (ComPortComboBox.SelectedItem == null && ports.Length > 0)
-                ComPortComboBox.SelectedItem = ports.Last();
-        }
-
-        private void ShowStepSizeMenu(Control button)
-        {
-            var menu = new ContextMenuStrip();
-            var stepValues = new[] { 1, 10, 100, 1000, 6250, 10000 }; // Sorted ascending
-            foreach (var step in stepValues)
-            {
-                var item = new ToolStripMenuItem($"{step:N0} Hz");
-                item.Tag = step;
-                item.Click += (s, e) =>
-                {
-                    leftRightStep = (int)((ToolStripMenuItem)s!).Tag!;
-                    MessageBox.Show($"Step size set to {leftRightStep} Hz", "Step Size", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                };
-                menu.Items.Add(item);
-            }
-            menu.Show(button, button.PointToClient(Cursor.Position));
-        }
-
-        private void ShowMultiplierMenu(Control button)
-        {
-            var menu = new ContextMenuStrip();
-            var multValues = new[] { 1, 2, 3, 4, 5, 10 }; // Sorted ascending
-            foreach (var mult in multValues)
-            {
-                var item = new ToolStripMenuItem($"× {mult}");
-                item.Tag = mult;
-                item.Click += (s, e) =>
-                {
-                    upDownMultiplier = (int)((ToolStripMenuItem)s!).Tag!;
-                    MessageBox.Show($"Multiplier set to ×{upDownMultiplier}", "Multiplier", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                };
-                menu.Items.Add(item);
-            }
-            menu.Show(button, button.PointToClient(Cursor.Position));
-        }
-
-        private void PopulateModeComboBox()
-        {
-            ModeComboBox.Items.Clear();
-            ModeComboBox.Items.AddRange(new object[]
-            {
-                "NONE", "CW-L", "CW-U", "LSB", "USB", "FM-N", "AM-N", "FM", "AM",
-                "DATA-L", "DATA-U", "DATA-FM-N", "DATA-FM", "RTTY-U", "PSK"
-            });
-            ModeComboBox.SelectedIndex = 4; // USB default
-        }
-
         private void ComPortButton_Click(object? sender, EventArgs e)
         {
             if (!isConnected)
@@ -242,7 +236,7 @@ namespace Remote_control
                     MessageBox.Show("Please select a COM port and speed.");
                     return;
                 }
-                
+
                 try
                 {
                     serialPort = new SerialPort(
@@ -253,10 +247,19 @@ namespace Remote_control
                     serialPort.Open();
 
                     isConnected = true;
-                    ComPortButton.Text = "Discon";
+                    connectedStartTime = DateTime.Now;
+
+                    if (connectedTimer == null)
+                    {
+                        connectedTimer = new System.Windows.Forms.Timer();
+                        connectedTimer.Interval = 1000; // 1 second
+                        connectedTimer.Tick += ConnectedTimer_Tick;
+                    }
+                    connectedTimer.Start();
+                    ComPortButton.Text = "Disconnect";
                     SetAllStatusTexts("WAIT");
 
-                    SaveSettings();                    
+                    SaveSettings();
                     SendCommand("AI;");
 
                     riPollTimer.Start();
@@ -265,10 +268,10 @@ namespace Remote_control
                     freqPollTimer!.Start();
                 }
                 catch (Exception ex)
-                {                    
+                {
                     isConnected = false;
                     ComPortButton.Text = "Connect";
-                    FrequencyTextBox.Text = Assembly.GetExecutingAssembly().GetName().Version.ToString()!;
+                    FrequencyTextBox.Text = Assembly.GetExecutingAssembly().GetName().Version!.ToString();
                     SetAllStatusTexts("---");
                     MessageBox.Show("Error opening serial port: " + ex.Message);
                 }
@@ -292,9 +295,11 @@ namespace Remote_control
                 isConnected = false;
                 ComPortButton.Text = "Connect";
                 SetAllStatusTexts("---");
+                connectedTimer?.Stop();
+                ConnectedTime.Text = ""; // Clear the label
+                connectedStartTime = null;
             }
         }
-
         private void SerialPort_DataReceived(object? sender, SerialDataReceivedEventArgs e)
         {
             if (serialPort == null) return;
@@ -313,6 +318,238 @@ namespace Remote_control
             }
             catch { }
         }
+        private void ModeComboBox_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            if (isConnected && serialPort?.IsOpen == true)
+            {
+                string modeCode = IndexToModeCode(ModeComboBox.SelectedIndex);
+                SendCommand($"MD0{modeCode};");
+            }
+        }
+        private void BandSelectDropDown_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            int index = BandSelectDropDown.SelectedIndex;
+            if (index >= 0 && index < BandEdgeLabels.Length)
+            {
+                BandEdgesLabel.Text = $"{BandEdgeLabels[index]}";
+                string catCommand = $"BS{index:D2};";
+                SendCommand(catCommand);
+            }
+        }
+
+        private void FreqPollTimer_Tick(object? sender, EventArgs e)
+        {
+            if (isConnected && (DateTime.Now - lastFrequencyUpdate).TotalMilliseconds > 1000)
+            {
+                SendCommand("IF;");
+            }
+        }
+        private void ConnectedTimer_Tick(object? sender, EventArgs e)
+        {
+            if (connectedStartTime.HasValue)
+            {
+                TimeSpan elapsed = DateTime.Now - connectedStartTime.Value;
+                ConnectedTime.Text = $"Connected {(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+            }
+        }
+        private void PopulateComPorts()
+        {
+            ComPortComboBox.Items.Clear();
+
+            // Get ports, sort by numeric part, e.g. COM1 < COM2 < COM10
+            var ports = SerialPort.GetPortNames()
+                .Where(p => p.StartsWith("COM", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(p =>
+                {
+                    if (int.TryParse(p.Substring(3), out int num)) return num;
+                    return int.MaxValue;
+                })
+                .ToArray();
+
+            ComPortComboBox.Items.AddRange(ports);
+
+            // Select highest port if not already selected from settings
+            if (ComPortComboBox.SelectedItem == null && ports.Length > 0)
+                ComPortComboBox.SelectedItem = ports.Last();
+        }
+        private void PopulateBandSelectComboBox()
+        {
+            BandSelectDropDown.Items.Clear();
+
+            BandSelectDropDown.Items.AddRange(new string[]
+            {
+                "160M band",    // 1.8 MHz
+                "80M band",     // 3.5 MHz
+                "60M band",     // 5 MHz
+                "40M band",     // 7 MHz
+                "30M band",     // 10 MHz
+                "20M band",     // 14 MHz
+                "17M band",     // 18 MHz
+                "15M band",     // 21 MHz
+                "12M band",     // 24.5 MHz
+                "10M band",     // 28 MHz
+                "6M band",      // 50 MHz
+                "4M / Gen"      // 70 MHz / Gen
+            });
+
+            BandSelectDropDown.SelectedIndexChanged += BandSelectDropDown_SelectedIndexChanged;
+            BandSelectDropDown.SelectedIndex = 0; // Optional: select default
+        }
+        private void UpdateBandEdgeLabel(long frequencyHz)
+        {
+            int band = BandSelectDropDown.SelectedIndex;
+            if (band < 0 || band >= BandEdgeLow.Length)
+                return;
+
+            if (frequencyHz < BandEdgeLow[band] || frequencyHz > BandEdgeHigh[band])
+            {
+                // Out of band
+                BandEdgesLabel.BackColor = Color.Red;
+                BandEdgesLabel.ForeColor = Color.White;
+            }
+            else
+            {
+                // In band
+                BandEdgesLabel.BackColor = SystemColors.Control;
+                BandEdgesLabel.ForeColor = SystemColors.ControlText;
+            }
+
+            // Update the text again (optional if already done elsewhere)
+            BandEdgesLabel.Text = $"{BandEdgeLabels[band]}";
+        }
+        private void PopulateModeComboBox()
+        {
+            ModeComboBox.Items.Clear();
+            ModeComboBox.Items.AddRange(new object[]
+            {
+                "NONE", "CW-L", "CW-U", "LSB", "USB", "FM-N", "AM-N", "FM", "AM",
+                "DATA-L", "DATA-U", "DATA-FM-N", "DATA-FM", "RTTY-U", "PSK"
+            });
+            ModeComboBox.SelectedIndex = 4; // USB default
+        }
+        private void InitializeTooltips()
+        {
+            tooltip.SetToolTip(ComPortComboBox, "Select the COM port of the radio.");
+            tooltip.SetToolTip(ComSpeedComboBox, "Select the baud rate.");
+            tooltip.SetToolTip(ComPortButton, "Connect or disconnect the serial port.");
+            tooltip.SetToolTip(FrequencyTextBox, "Current frequency in Hz (read-only).");
+            tooltip.SetToolTip(FrequencyChangeTextBox, "Enter frequency to set (30000 - 75000000 Hz). Press Enter or Set.");
+            tooltip.SetToolTip(ButtonFreqClear, "Clear frequency input.");
+            tooltip.SetToolTip(ButtonFreqSet, "Set frequency to entered value.");
+
+            tooltip.SetToolTip(ButtonMainLeft, "Decrease frequency by step (right-click to change step).");
+            tooltip.SetToolTip(ButtonMainRight, "Increase frequency by step (right-click to change step).");
+            tooltip.SetToolTip(ButtonMainUp, "Increase frequency by step × multiplier (right-click to change multiplier).");
+            tooltip.SetToolTip(ButtonMainDown, "Decrease frequency by step × multiplier (right-click to change multiplier).");
+
+            tooltip.SetToolTip(ButtonMainPB, "Push/Back toggle button.\nActive: Press buttons 1-5 to playback the message in that slot.");
+            tooltip.SetToolTip(ButtonMainMem, "Memory toggle button.\nActive: Press buttons 1-5 to record new message in that slot.");
+
+            tooltip.SetToolTip(ModeComboBox, "Select radio mode.");
+            tooltip.SetToolTip(BandSelectDropDown, "Select radio band.");
+
+            // Add tooltips for buttons 1-5 with dynamic text
+            UpdateMainButtonTooltips();
+        }
+        private void UpdateMainButtonTooltips()
+        {
+            string[] btnNames = { "ButtonMain1", "ButtonMain2", "ButtonMain3", "ButtonMain4", "ButtonMain5" };
+            Button[] buttons = { ButtonMain1, ButtonMain2, ButtonMain3, ButtonMain4, ButtonMain5 };
+
+            for (int i = 0; i < 5; i++)
+            {
+                string tip = $"Send CAT Command: {mainButtonCatCommands[i]}\nRight click to change the command.";
+                tooltip.SetToolTip(buttons[i], tip);
+            }
+        }
+
+        private void ConfigureSliders()
+        {
+            // Volume
+            VolumeTrackBar.Minimum = 0;
+            VolumeTrackBar.Maximum = 255;
+            VolumeTrackBar.TickFrequency = 16;
+            VolumeTrackBar.ValueChanged += VolumeTrackBar_ValueChanged;
+            tooltip.SetToolTip(VolumeTrackBar, $"Volume: {VolumeTrackBar.Value}");
+
+            // Squelch
+            SquelchTrackBar.Minimum = 0;
+            SquelchTrackBar.Maximum = 100;
+            SquelchTrackBar.TickFrequency = 10;
+            SquelchTrackBar.ValueChanged += SquelchTrackBar_ValueChanged;
+            tooltip.SetToolTip(SquelchTrackBar, $"Squelch: {SquelchTrackBar.Value}");
+
+            // RF Gain
+            RFGainTrackBar.Minimum = 0;
+            RFGainTrackBar.Maximum = 255;
+            RFGainTrackBar.TickFrequency = 16;
+            RFGainTrackBar.ValueChanged += RFGainTrackBar_ValueChanged;
+            tooltip.SetToolTip(RFGainTrackBar, $"RF Gain: {RFGainTrackBar.Value}");
+        }
+        private void VolumeTrackBar_ValueChanged(object? sender, EventArgs e)
+        {
+            int val = VolumeTrackBar.Value;
+            string cat = $"AG0{val:D3};";
+            SendCommand(cat);
+            tooltip.SetToolTip(VolumeTrackBar, $"Volume: {val}");
+            ignoreVolumeResponse = true;
+            volumeResponseTimer.Stop();
+            volumeResponseTimer.Start();
+        }
+        private void SquelchTrackBar_ValueChanged(object? sender, EventArgs e)
+        {
+            int val = SquelchTrackBar.Value;
+            string cat = $"SQ0{val:D3};";
+            SendCommand(cat);
+            tooltip.SetToolTip(SquelchTrackBar, $"Squelch: {val}");
+            ignoreSquelchResponse = true;
+            squelchResponseTimer.Stop();
+            squelchResponseTimer.Start();
+        }
+        private void RFGainTrackBar_ValueChanged(object? sender, EventArgs e)
+        {
+            int val = RFGainTrackBar.Value;
+            string cat = $"RG0{val:D3};";
+            SendCommand(cat);
+            tooltip.SetToolTip(RFGainTrackBar, $"RF Gain: {val}");
+            ignoreRFGainResponse = true;
+            rfGainResponseTimer.Stop();
+            rfGainResponseTimer.Start();
+        }
+
+        private void ShowStepSizeMenu(Control button)
+        {
+            var menu = new ContextMenuStrip();
+            var stepValues = new[] { 1, 10, 100, 1000, 6250, 10000 }; // Sorted ascending
+            foreach (var step in stepValues)
+            {
+                var item = new ToolStripMenuItem($"{step:N0} Hz");
+                item.Tag = step;
+                item.Click += (s, e) =>
+                {
+                    leftRightStep = (int)((ToolStripMenuItem)s!).Tag!;
+                };
+                menu.Items.Add(item);
+            }
+            menu.Show(button, button.PointToClient(Cursor.Position));
+        }
+        private void ShowMultiplierMenu(Control button)
+        {
+            var menu = new ContextMenuStrip();
+            var multValues = new[] { 1, 2, 3, 4, 5, 10 }; // Sorted ascending
+            foreach (var mult in multValues)
+            {
+                var item = new ToolStripMenuItem($"× {mult}");
+                item.Tag = mult;
+                item.Click += (s, e) =>
+                {
+                    upDownMultiplier = (int)((ToolStripMenuItem)s!).Tag!;
+                    MessageBox.Show($"Multiplier set to ×{upDownMultiplier}", "Multiplier", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                };
+                menu.Items.Add(item);
+            }
+            menu.Show(button, button.PointToClient(Cursor.Position));
+        }
 
         private void HandleRadioResponse(string data)
         {
@@ -327,7 +564,31 @@ namespace Remote_control
                 return;
             }
 
-            if (data.StartsWith("AI"))
+            if (data.StartsWith("AG0") && !ignoreVolumeResponse)
+            {
+                if (int.TryParse(data.Substring(3, 3), out int vol))
+                {
+                    VolumeTrackBar.Value = Math.Clamp(vol, VolumeTrackBar.Minimum, VolumeTrackBar.Maximum);
+                    VolumeValueLabel.Text = $"AF Gain\n{VolumeTrackBar.Value.ToString()}";
+                }
+            }
+            else if (data.StartsWith("SQ0") && !ignoreSquelchResponse)
+            {
+                if (int.TryParse(data.Substring(3, 3), out int squelch))
+                {
+                    SquelchTrackBar.Value = Math.Clamp(squelch, SquelchTrackBar.Minimum, SquelchTrackBar.Maximum);
+                    SquelchValueLabel.Text = $"Squelch\n{SquelchTrackBar.Value.ToString()}";
+                }
+            }
+            else if (data.StartsWith("RG0") && !ignoreRFGainResponse)
+            {
+                if (int.TryParse(data.Substring(3, 3), out int rf))
+                {
+                    RFGainTrackBar.Value = Math.Clamp(rf, RFGainTrackBar.Minimum, RFGainTrackBar.Maximum);
+                    RFGainValueLabel.Text = $"RF Gain\n{RFGainTrackBar.Value.ToString()}";
+                }
+            }
+            else if (data.StartsWith("AI"))
             {
                 aiStatusInitial = data.Length > 2 ? data.Substring(2, 1) : "0";
                 aiWasEnabled = (aiStatusInitial == "1");
@@ -347,6 +608,14 @@ namespace Remote_control
                         FrequencyTextBox.Text = freq.ToString();
                         lastFrequencyUpdate = DateTime.Now;
                         HighlightTextBoxBriefly();
+                        int bandIndex = GetBandIndexFromFrequency(freq);
+
+                        // Update band dropdown if changed
+                        if (BandSelectDropDown.SelectedIndex != bandIndex)
+                            BandSelectDropDown.SelectedIndex = bandIndex;
+
+                        // Update label appearance
+                        UpdateBandEdgeLabel(freq);
                     }
                 }
             }
@@ -371,32 +640,6 @@ namespace Remote_control
                 }
             }
         }
-        private void UpdateDecButton()
-        {
-            ButtonMainDec.Text = "BkIn";
-            ButtonMainDec.BackColor = isBKINEnabled ? Color.LightGreen : SystemColors.Control;
-        }
-
-
-        private bool ChangingTextBoxColor = false;
-        private String lastFrequency = "";
-        private async void HighlightTextBoxBriefly()
-        {
-            if (!ChangingTextBoxColor)
-            {
-                ChangingTextBoxColor = true;
-                if (lastFrequency != FrequencyTextBox.Text)
-                {
-                    Color original = FrequencyTextBox.BackColor;
-                    FrequencyTextBox.BackColor = Color.Green;
-                    await Task.Delay(500); // Wait 500 milliseconds
-                    FrequencyTextBox.BackColor = original;
-                    lastFrequency = FrequencyTextBox.Text;
-                }
-                ChangingTextBoxColor = false;
-            }
-        }
-
         private void ParseRiStatus(string data)
         {
             if (data.Length < 11) return;
@@ -449,6 +692,29 @@ namespace Remote_control
                 _ => "---"
             };
         }
+        private void UpdateDecButton()
+        {
+            ButtonMainDec.Text = "BkIn";
+            ButtonMainDec.BackColor = isBKINEnabled ? Color.LightGreen : SystemColors.Control;
+        }
+
+        private async void HighlightTextBoxBriefly()
+        {
+            if (!ChangingTextBoxColor)
+            {
+                ChangingTextBoxColor = true;
+                if (lastFrequency != FrequencyTextBox.Text)
+                {
+                    Color original = FrequencyTextBox.BackColor;
+                    FrequencyTextBox.BackColor = Color.Green;
+                    await Task.Delay(500); // Wait 500 milliseconds
+                    FrequencyTextBox.BackColor = original;
+                    lastFrequency = FrequencyTextBox.Text;
+                }
+                ChangingTextBoxColor = false;
+            }
+        }
+
 
         private int ModeCodeToIndex(string code) => code switch
         {
@@ -469,7 +735,6 @@ namespace Remote_control
             "E" => 14,  // PSK
             _ => 0
         };
-
         private string IndexToModeCode(int index) => index switch
         {
             0 => "0",
@@ -489,14 +754,20 @@ namespace Remote_control
             14 => "E",
             _ => "0"
         };
-
-        private void ModeComboBox_SelectedIndexChanged(object? sender, EventArgs e)
+        private int GetBandIndexFromFrequency(long frequencyHz)
         {
-            if (isConnected && serialPort?.IsOpen == true)
-            {
-                string modeCode = IndexToModeCode(ModeComboBox.SelectedIndex);
-                SendCommand($"MD0{modeCode};");
-            }
+            if (frequencyHz < 2000000) return 0;    // 1.8 MHz
+            if (frequencyHz < 4000000) return 1;    // 3.5 MHz
+            if (frequencyHz < 6000000) return 2;    // 5 MHz
+            if (frequencyHz < 8000000) return 3;    // 7 MHz
+            if (frequencyHz < 11000000) return 4;   // 10 MHz
+            if (frequencyHz < 15000000) return 5;   // 14 MHz
+            if (frequencyHz < 19000000) return 6;   // 18 MHz
+            if (frequencyHz < 22000000) return 7;   // 21 MHz
+            if (frequencyHz < 25000000) return 8;   // 24.5 MHz
+            if (frequencyHz < 30000000) return 9;   // 28 MHz
+            if (frequencyHz < 60000000) return 10;  // 50 MHz
+            return 11;                              // 70 MHz / Gen or above
         }
 
         private void MainButton_Click(object? sender, EventArgs e)
@@ -533,7 +804,6 @@ namespace Remote_control
                 }
             }
         }
-
         private void MemButton_Click(object? sender, EventArgs e)
         {
             if (ButtonMainMem.BackColor == System.Drawing.Color.LightGreen)
@@ -547,7 +817,6 @@ namespace Remote_control
                 StartPBMemTimeout();
             }
         }
-
         private void PBButton_Click(object? sender, EventArgs e)
         {
             if (ButtonMainPB.BackColor == System.Drawing.Color.LightGreen)
@@ -561,41 +830,16 @@ namespace Remote_control
                 StartPBMemTimeout();
             }
         }
-
-        private System.Windows.Forms.Timer? pbMemTimeoutTimer = null;
-
-        private void StartPBMemTimeout()
-        {
-            if (pbMemTimeoutTimer == null)
-            {
-                pbMemTimeoutTimer = new System.Windows.Forms.Timer();
-                pbMemTimeoutTimer.Interval = 10000; // 10 seconds
-                pbMemTimeoutTimer.Tick += (s, e) =>
-                {
-                    ResetPBMemState();
-                    pbMemTimeoutTimer?.Stop();
-                };
-            }
-            pbMemTimeoutTimer.Stop();
-            pbMemTimeoutTimer.Start();
-        }
-
-        private void ResetPBMemState()
-        {
-            ButtonMainPB.BackColor = System.Drawing.SystemColors.Control;
-            ButtonMainMem.BackColor = System.Drawing.SystemColors.Control;
-            pbMemTimeoutTimer?.Stop();
-        }
-
-        private void LeftRightButton_RightClick_Or_Click(object? sender, EventArgs e)
+        private void LeftRightButton_RightClick_Or_Click(object? sender, MouseEventArgs e)
         {
             if (sender is Button btn)
             {
                 if (btn == ButtonMainLeft)
                 {
-                    if ((e as MouseEventArgs)?.Button == MouseButtons.Right)
+                    if (e.Button == MouseButtons.Right)
                     {
                         ChangeLeftRightStep();
+                        tooltip.SetToolTip(ButtonMainLeft, $"Decrease frequency by {leftRightStep} (right-click to change step).");
                         return;
                     }
                     ChangeFrequency(-leftRightStep);
@@ -603,7 +847,7 @@ namespace Remote_control
                 }
                 else if (btn == ButtonMainRight)
                 {
-                    if ((e as MouseEventArgs)?.Button == MouseButtons.Right)
+                    if (e.Button == MouseButtons.Right)
                     {
                         ShowStepSizeMenu(btn);
                         return;
@@ -613,7 +857,6 @@ namespace Remote_control
                 }
             }
         }
-
         private void UpDownButton_RightClick_Or_Click(object? sender, EventArgs e)
         {
             if (sender is Button btn)
@@ -643,35 +886,6 @@ namespace Remote_control
                 }
             }
         }
-
-        private void ChangeLeftRightStep()
-        {
-            int[] options = { 1, 10, 100, 1000, 6250, 12500, 25000 };
-            int currentIndex = Array.IndexOf(options, leftRightStep);
-            int nextIndex = (currentIndex + 1) % options.Length;
-            leftRightStep = options[nextIndex];
-            MessageBox.Show($"Left/Right step set to {leftRightStep} Hz");
-        }
-
-        private void ChangeUpDownMultiplier()
-        {
-            int[] options = { 2, 3, 4, 5, 10 };
-            int currentIndex = Array.IndexOf(options, upDownMultiplier);
-            int nextIndex = (currentIndex + 1) % options.Length;
-            upDownMultiplier = options[nextIndex];
-            MessageBox.Show($"Up/Down multiplier set to {upDownMultiplier}x");
-        }
-
-        private void ChangeFrequency(int deltaHz)
-        {
-            if (!long.TryParse(FrequencyTextBox.Text, out long currentFreq)) return;
-            long newFreq = currentFreq + deltaHz;
-            if (newFreq >= 30000 && newFreq <= 75000000 && isConnected && serialPort != null && serialPort.IsOpen)
-            {
-                SendCommand($"FA{newFreq:D9};");
-            }
-        }
-
         private void FreqButton_Click(object? sender, EventArgs e)
         {
             if (sender is Button btn)
@@ -679,7 +893,6 @@ namespace Remote_control
                 FrequencyChangeTextBox.AppendText(btn.Text);
             }
         }
-
         private void SetFrequency_Click(object? sender, EventArgs e)
         {
             if(float.TryParse(FrequencyChangeTextBox.Text, out float f))
@@ -694,13 +907,13 @@ namespace Remote_control
             {
                 if (freq >= 30000 && freq <= 75000000 && isConnected && serialPort != null && serialPort.IsOpen)
                 {
-                    SendCommand($"FA{freq:D9};");
+                    SetFrequency(freq);
                     FrequencyChangeTextBox.Clear();
                     ResetPBMemState();
+                    UpdateBandEdgeLabel(freq);  // <- check visual feedback
                 }
             }
         }
-
         private void ButtonMainDec_Click(object? sender, EventArgs e)
         {
             if (!isConnected || serialPort == null || !serialPort.IsOpen) return;
@@ -709,17 +922,6 @@ namespace Remote_control
             SendCommand($"BI{(isBKINEnabled ? "1" : "0")};");
             UpdateDecButton();
         }
-
-        private void FrequencyChangeTextBox_KeyDown(object? sender, KeyEventArgs e)
-        {
-            if (e.KeyCode == Keys.Enter)
-            {
-                e.Handled = true;
-                e.SuppressKeyPress = true;
-                SetFrequency_Click(sender, EventArgs.Empty);
-            }
-        }
-
         private void MainButton_MouseDown(object? sender, MouseEventArgs e)
         {
             if (e.Button == MouseButtons.Right && sender is Button btn)
@@ -745,6 +947,87 @@ namespace Remote_control
             }
         }
 
+        private void FrequencyChangeTextBox_KeyDown(object? sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                SetFrequency_Click(sender, EventArgs.Empty);
+            }
+        }
+
+
+        private void StartPBMemTimeout()
+        {
+            if (pbMemTimeoutTimer == null)
+            {
+                pbMemTimeoutTimer = new System.Windows.Forms.Timer();
+                pbMemTimeoutTimer.Interval = 10000; // 10 seconds
+                pbMemTimeoutTimer.Tick += (s, e) =>
+                {
+                    ResetPBMemState();
+                    pbMemTimeoutTimer?.Stop();
+                };
+            }
+            pbMemTimeoutTimer.Stop();
+            pbMemTimeoutTimer.Start();
+        }
+        private void ResetPBMemState()
+        {
+            ButtonMainPB.BackColor = System.Drawing.SystemColors.Control;
+            ButtonMainMem.BackColor = System.Drawing.SystemColors.Control;
+            pbMemTimeoutTimer?.Stop();
+        }
+        private void ChangeLeftRightStep()
+        {
+            int[] options = { 1, 10, 100, 1000, 6250, 12500, 25000 };
+            int currentIndex = Array.IndexOf(options, leftRightStep);
+            int nextIndex = (currentIndex - 1);
+            if(nextIndex <0)
+                    nextIndex = options.Length - 1;
+            leftRightStep = options[nextIndex];
+        }
+        private void ChangeUpDownMultiplier()
+        {
+            int[] options = { 2, 3, 4, 5, 10 };
+            int currentIndex = Array.IndexOf(options, upDownMultiplier);
+            int nextIndex = (currentIndex + 1) % options.Length;
+            upDownMultiplier = options[nextIndex];
+            MessageBox.Show($"Up/Down multiplier set to {upDownMultiplier}x");
+        }
+        private void ChangeFrequency(int deltaHz)
+        {
+            if (!long.TryParse(FrequencyTextBox.Text, out long currentFreq)) return;
+            long newFreq = currentFreq + deltaHz;
+            if (newFreq >= 30000 && newFreq <= 75000000 && isConnected && serialPort != null && serialPort.IsOpen)
+            {
+                SetFrequency(newFreq);
+            }
+        }
+        private void SetFrequency(long newFrequencyHz)
+        {
+            int newBandIndex = GetBandIndexFromFrequency(newFrequencyHz);
+
+            if (BandSelectDropDown.SelectedIndex != newBandIndex)
+            {
+                BandSelectDropDown.SelectedIndex = newBandIndex; // Triggers the band change
+                                                                 // Note: BandSelectDropDown_SelectedIndexChanged will send BSxx;
+            }
+
+            // Then send the frequency CAT command
+            string freqCommand = $"FA{newFrequencyHz:D9};";  // or appropriate command for your radio
+            SendCommand(freqCommand);
+        }
+        private void SetAllStatusTexts(string text)
+        {
+            Status1Text.Text = text;
+            Status2Text.Text = text;
+            Status3Text.Text = text;
+            Status4Text.Text = text;
+            Status5Text.Text = text;
+            Status6Text.Text = text;
+        }
 
         private void SendCommand(string command)
         {
@@ -758,52 +1041,6 @@ namespace Remote_control
             catch (Exception ex)
             {
                 MessageBox.Show($"Failed to send command: {ex.Message}");
-            }
-        }
-
-        private void SetAllStatusTexts(string text)
-        {
-            Status1Text.Text = text;
-            Status2Text.Text = text;
-            Status3Text.Text = text;
-            Status4Text.Text = text;
-            Status5Text.Text = text;
-            Status6Text.Text = text;
-        }
-
-        private void InitializeTooltips()
-        {
-            tooltip.SetToolTip(ComPortComboBox, "Select the COM port of the radio.");
-            tooltip.SetToolTip(ComSpeedComboBox, "Select the baud rate.");
-            tooltip.SetToolTip(ComPortButton, "Connect or disconnect the serial port.");
-            tooltip.SetToolTip(FrequencyTextBox, "Current frequency in Hz (read-only).");
-            tooltip.SetToolTip(FrequencyChangeTextBox, "Enter frequency to set (30000 - 75000000 Hz). Press Enter or Set.");
-            tooltip.SetToolTip(ButtonFreqClear, "Clear frequency input.");
-            tooltip.SetToolTip(ButtonFreqSet, "Set frequency to entered value.");
-
-            tooltip.SetToolTip(ButtonMainLeft, "Decrease frequency by step (right-click to change step).");
-            tooltip.SetToolTip(ButtonMainRight, "Increase frequency by step (right-click to change step).");
-            tooltip.SetToolTip(ButtonMainUp, "Increase frequency by step × multiplier (right-click to change multiplier).");
-            tooltip.SetToolTip(ButtonMainDown, "Decrease frequency by step × multiplier (right-click to change multiplier).");
-
-            tooltip.SetToolTip(ButtonMainPB, "Push/Back toggle button.\nActive: Press buttons 1-5 to playback the message in that slot.");
-            tooltip.SetToolTip(ButtonMainMem, "Memory toggle button.\nActive: Press buttons 1-5 to record new message in that slot.");
-
-            tooltip.SetToolTip(ModeComboBox, "Select radio mode.");
-
-            // Add tooltips for buttons 1-5 with dynamic text
-            UpdateMainButtonTooltips();
-        }
-
-        private void UpdateMainButtonTooltips()
-        {
-            string[] btnNames = { "ButtonMain1", "ButtonMain2", "ButtonMain3", "ButtonMain4", "ButtonMain5" };
-            Button[] buttons = { ButtonMain1, ButtonMain2, ButtonMain3, ButtonMain4, ButtonMain5 };
-
-            for (int i = 0; i < 5; i++)
-            {
-                string tip = $"Send CAT Command: {mainButtonCatCommands[i]}\nRight click to change the command.";
-                tooltip.SetToolTip(buttons[i], tip);
             }
         }
 
@@ -852,7 +1089,6 @@ namespace Remote_control
             }
             catch { }
         }
-
         private void SaveSettings()
         {
             try

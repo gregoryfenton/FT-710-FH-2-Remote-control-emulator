@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     branches:
-      - main  # Change to your branch name if needed
+      - master  # Change to your branch name if needed
     paths-ignore:
       - '**.md'
 
@@ -24,12 +24,12 @@ jobs:
         run: dotnet restore
 
       - name: Build project
-        run: dotnet build --configuration Release --no-restore
+        run: dotnet build "Remote control/Remote control.csproj" --configuration Release --no-restore
 
       - name: Locate built .exe
         id: find-exe
         run: |
-          $exePath = Get-ChildItem -Recurse -Filter "*.exe" -Path .\bin\Release\net9.0-windows | Select-Object -First 1
+          $exePath = Get-ChildItem -Recurse -Filter "*.exe" -Path .\Remote control\bin\Release\net9.0-windows | Select-Object -First 1
           echo "EXE_PATH=$($exePath.FullName)" >> $env:GITHUB_ENV
 
       - name: Create Release
