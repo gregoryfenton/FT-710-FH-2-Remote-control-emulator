@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master  # Change if your main branch is named differently
+    workflow_dispatch:   # <-- THIS enables manual trigger
 
 jobs:
   build:
