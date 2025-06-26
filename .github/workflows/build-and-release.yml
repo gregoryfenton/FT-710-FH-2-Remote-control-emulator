@@ -24,6 +24,7 @@ jobs:
         run: dotnet restore
 
       - name: Build project
+        working-directory: Remote control
         run: dotnet build --configuration Release --no-restore
 
       - name: Locate built .exe
